@@ -1,0 +1,1 @@
+Registration - > Otp Login - > taken test -> report generated and report will send VIA mail -> mentor assigining based on the report.

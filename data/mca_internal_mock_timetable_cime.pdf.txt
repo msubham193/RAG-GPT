@@ -1,0 +1,9 @@
+CIME College
+MCA Internal MOCK Examination
+May 2025
+Date Day Semester Subject Time
+2025-05-05 Monday Semester 1 Mathematics for Computing 10:00 AM - 12:00 PM
+2025-05-06 Tuesday Semester 1 Computer Organization 10:00 AM - 12:00 PM
+2025-05-07 Wednesday Semester 1 Programming in C 10:00 AM - 12:00 PM
+2025-05-08 Thursday Semester 1 Operating Systems 10:00 AM - 12:00 PM
+2025-05-09 Friday Semester 1 Database Management Systems 10:00 AM - 12:00 PM
