@@ -1,7 +1,8 @@
 import os
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form
-from pydantic import BaseModel
-from typing import Optional, List
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Depends
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, EmailStr, Field
+from typing import Optional, List, Dict, Any
 from langchain_groq import ChatGroq
 from langchain_ollama import OllamaEmbeddings
 from langchain_community.vectorstores import FAISS
@@ -15,6 +16,10 @@ import PyPDF2
 import tempfile
 import shutil
 import uuid
+import pymongo
+import hashlib
+from datetime import datetime
+from bson import ObjectId
 
 # Load environment variables
 load_dotenv()
@@ -23,8 +28,42 @@ groq_api_key = os.environ['GROQ_API_KEY']
 # Initialize FastAPI app
 app = FastAPI(title="CUTM Chatbot API")
 
+# Enable CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 # Initialize global vector store
 vector_store = None
+
+# MongoDB Connection
+MONGO_URI = "mongodb+srv://audobookcmp:mERonz15DT220mZ3@audobookserverlessinsta.oa4gzac.mongodb.net/cime?retryWrites=true&w=majority&appName=audobookServerlessInstance0"
+client = pymongo.MongoClient(MONGO_URI)
+db = client.cime
+users_collection = db.users
+
+# Models
+class UserBase(BaseModel):
+    email: EmailStr
+    name: str
+
+class UserCreate(UserBase):
+    password: str
+
+class UserResponse(UserBase):
+    id: str
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+class UserInDB(UserBase):
+    hashed_password: str
+    created_at: datetime = Field(default_factory=datetime.utcnow)
 
 class ChatRequest(BaseModel):
     question: str
@@ -36,6 +75,19 @@ class ChatResponse(BaseModel):
 class PDFUploadResponse(BaseModel):
     message: str
     document_id: str
+
+class LoginRequest(BaseModel):
+    email: EmailStr
+    password: str
+
+# Helper functions
+def hash_password(password: str) -> str:
+    """Hash a password for storing."""
+    return hashlib.sha256(password.encode()).hexdigest()
+
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    """Verify a stored password against one provided by user."""
+    return hash_password(plain_password) == hashed_password
 
 def read_text_file(file_path):
     """Try different encodings to read the text file."""
@@ -192,6 +244,63 @@ async def startup_event():
         
     vector_store = initialize_vector_store()
 
+# Simple User Authentication Endpoints
+@app.post("/signup", response_model=UserResponse)
+async def signup(user_data: UserCreate):
+    """Register a new user."""
+    # Check if email already exists
+    if users_collection.find_one({"email": user_data.email}):
+        raise HTTPException(status_code=400, detail="Email already registered")
+    
+    # Create new user
+    user_dict = {
+        "email": user_data.email,
+        "name": user_data.name,
+        "hashed_password": hash_password(user_data.password),
+        "created_at": datetime.utcnow()
+    }
+    
+    result = users_collection.insert_one(user_dict)
+    
+    # Return the created user
+    created_user = users_collection.find_one({"_id": result.inserted_id})
+    return {
+        "id": str(created_user["_id"]),
+        "email": created_user["email"],
+        "name": created_user["name"],
+        "created_at": created_user["created_at"]
+    }
+
+@app.post("/login", response_model=UserResponse)
+async def login(login_data: LoginRequest):
+    """Login a user and return user data."""
+    # Find user by email
+    user = users_collection.find_one({"email": login_data.email})
+    if not user or not verify_password(login_data.password, user["hashed_password"]):
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+    
+    # Return user data
+    return {
+        "id": str(user["_id"]),
+        "email": user["email"],
+        "name": user["name"],
+        "created_at": user["created_at"]
+    }
+
+@app.get("/users", response_model=List[UserResponse])
+async def get_all_users():
+    """Get all users from the database."""
+    users = []
+    for user in users_collection.find():
+        users.append({
+            "id": str(user["_id"]),
+            "email": user["email"],
+            "name": user["name"],
+            "created_at": user.get("created_at", datetime.utcnow())
+        })
+    return users
+
+# ChatBot Endpoints
 @app.post("/chat", response_model=ChatResponse)
 async def chat_endpoint(request: ChatRequest):
     """
@@ -217,7 +326,10 @@ async def chat_endpoint(request: ChatRequest):
         raise HTTPException(status_code=500, detail=f"Error processing request: {str(e)}")
 
 @app.post("/upload-pdf", response_model=PDFUploadResponse)
-async def upload_pdf(file: UploadFile = File(...), document_name: Optional[str] = Form(None)):
+async def upload_pdf(
+    file: UploadFile = File(...), 
+    document_name: Optional[str] = Form(None)
+):
     """
     Endpoint to upload a PDF file, extract text, and add it to the vector store.
     """
